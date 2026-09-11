@@ -313,7 +313,7 @@ cat("(European Union excluded from country-level GDP join; shown separately via 
 # Bivariate map styled after timogrossenbacher.ch/bivariate-maps-with-ggplot2-and-sf/
 # 3x3 classes built from tertiles of GDP and indicators reported
 default_font_color <- "#4e4d47"
-default_background_color <- "#f8f8f8"
+default_background_color <- "#ffffff"
 
 theme_map <- function(...) {
   theme_minimal() +
