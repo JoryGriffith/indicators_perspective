@@ -7,7 +7,9 @@ library(stringi)
 dat <- read.csv("scbd-ort-nr7-data-indicator-data-10-Sep-2026-15-39.csv") %>%
   mutate(Government = stri_trans_nfc(Government)) # fix NFD/NFC unicode mismatches (e.g. "Türkiye")
 
-dat %>% group_by(Government) %>% count()
+dat %>%
+  group_by(Government) %>%
+  count()
 # 130 countries represented in the data
 
 # Filter out national indicators
@@ -185,7 +187,9 @@ map_data <- world %>%
     )
   )
 
-map_data %>% filter(cbd_party == "No") %>% select(name, indicators_count) 
+map_data %>%
+  filter(cbd_party == "No") %>%
+  select(name, indicators_count)
 
 log_breaks <- c(0, 1, 2, 5, 10, 20, 50, 100, 200)
 log_breaks <- log_breaks[log_breaks <= max(map_data$indicators_count, na.rm = TRUE)]
@@ -254,6 +258,8 @@ eu_inset <- ggplot(eu_map_data) +
 map_plot_with_inset <- map_plot +
   inset_element(eu_inset, left = 0, bottom = 0, right = 0.32, top = 0.5)
 
+print(map_plot_with_inset)
+
 ggsave("indicators_map.png", plot = map_plot_with_inset, width = 12, height = 7, dpi = 300)
 
 # Pull GDP (current US$) from the World Bank and compare to indicators reported
@@ -289,18 +295,7 @@ gdp_full <- tibble(Government = cbd_country_names) %>%
   mutate(indicators_count = coalesce(indicators_count, 0L)) %>%
   left_join(gdp_data, by = c("Government" = "country"))
 
-gdp_scatter <- ggplot(gdp_vs_indicators, aes(x = gdp, y = log(indicators_count))) +
-  geom_point(color = "steelblue", alpha = 0.7) +
-  scale_x_log10(labels = scales::label_dollar(scale_cut = scales::cut_short_scale())) +
-  theme_minimal(base_size = 12) +
-  geom_smooth(method="lm", se = TRUE) +
-  labs(
-    title = "Indicators reported vs. GDP",
-    x = "GDP (current US$, log scale)",
-    y = "Indicators reported"
-  )
-
-ggsave("gdp_vs_indicators.png", plot = gdp_scatter, width = 8, height = 6, dpi = 300)
+# Run linear model of GDP vs indicators_count, log-transforming the latter to reduce skew
 
 # Why do many countries show up grey? Trace the data-availability funnel.
 cat("\n--- Coverage funnel ---\n")
@@ -323,12 +318,12 @@ theme_map <- function(...) {
       axis.text.x = element_blank(),
       axis.text.y = element_blank(),
       axis.ticks = element_blank(),
-      panel.grid.major = element_line(color = "#dbdbd9", linewidth = 0.2),
+      panel.grid.major = element_blank(), ,
       panel.grid.minor = element_blank(),
       plot.background = element_rect(fill = default_background_color, color = NA),
       panel.background = element_rect(fill = default_background_color, color = NA),
       legend.background = element_rect(fill = default_background_color, color = NA),
-      plot.margin = unit(c(.5, .5, .2, .5), "cm"),
+      plot.margin = margin(0, 0, 0, 0),
       panel.border = element_blank(),
       legend.title = element_text(size = 11),
       legend.text = element_text(size = 9, hjust = 0, color = default_font_color),
@@ -371,7 +366,7 @@ bivariate_color_scale <- tibble(
   "1 - 2" = "#89A1C8",
   "3 - 1" = "#AE3A4E", # high indicators, low GDP
   "2 - 1" = "#BC7C8F",
-  "1 - 1" = "#CABED0"  # low indicators, low GDP
+  "1 - 1" = "#CABED0" # low indicators, low GDP
 ) %>%
   pivot_longer(everything(), names_to = "group", values_to = "fill")
 
@@ -382,6 +377,152 @@ gdp_full <- gdp_full %>%
     group = if_else(!is.na(gdp), paste(ind_tertile, "-", gdp_tertile), NA_character_)
   ) %>%
   left_join(bivariate_color_scale, by = "group")
+
+write.csv(gdp_full, "gdp_full_bivariate.csv", row.names = FALSE)
+# Run linear model of GDP vs indicators_count, log-transforming the latter to reduce skew
+
+lm_model <- lm(
+  log(indicators_count + 1) ~ log(gdp),
+  data = gdp_full
+)
+
+summary(lm_model)
+
+pred <- predict(
+  lm_model,
+  newdata = gdp_full,
+  interval = "confidence"
+)
+
+gdp_full$predicted <- exp(pred[, "fit"]) - 1
+gdp_full$lower <- exp(pred[, "lwr"]) - 1
+gdp_full$upper <- exp(pred[, "upr"]) - 1
+
+print(gdp_full$predicted)
+
+# Make scatterplot of GDP vs indicators_count, colored by bivariate class
+
+# Make theme for scatter plot
+theme_scatter <- function(...) {
+  theme_minimal() +
+    theme(
+      text = element_text(color = default_font_color),
+
+      # Axes
+      axis.line = element_blank(),
+      axis.text.x = element_text(size = 9, color = default_font_color),
+      axis.text.y = element_text(size = 9, color = default_font_color),
+      axis.title.x = element_text(size = 11, color = default_font_color),
+      axis.title.y = element_text(size = 11, color = default_font_color),
+      axis.ticks = element_blank(),
+
+      # Grid
+      panel.grid.major = element_line(color = "#dbdbd9", linewidth = 0.2),
+      panel.grid.minor = element_blank(),
+
+      # Background
+      plot.background = element_rect(
+        fill = default_background_color, color = NA
+      ),
+      panel.background = element_rect(
+        fill = default_background_color, color = NA
+      ),
+      legend.background = element_rect(
+        fill = default_background_color, color = NA
+      ),
+
+      # Other
+      plot.margin = unit(c(.5, .5, .2, .5), "cm"),
+      panel.border = element_blank(),
+
+      # Legend
+      legend.title = element_text(size = 11),
+      legend.text = element_text(
+        size = 9, hjust = 0, color = default_font_color
+      ),
+
+      # Titles
+      plot.title = element_text(
+        size = 15, hjust = 0.5, color = default_font_color
+      ),
+      plot.subtitle = element_text(
+        size = 10, hjust = 0.5, color = default_font_color
+      ),
+      plot.caption = element_text(
+        size = 7, hjust = .5, color = "#939184"
+      ),
+      ...
+    )
+}
+
+gdp_scatter <- ggplot(
+  gdp_full,
+  aes(x = gdp, y = indicators_count)
+) +
+  # Confidence interval
+  geom_ribbon(
+    aes(
+      ymin = pmax(lower, 0),
+      ymax = upper
+    ),
+    fill = "#777777",
+    alpha = 0.07
+  ) +
+  # Regression line
+  geom_line(
+    data = gdp_full %>%
+      filter(predicted >= 0) %>%
+      arrange(gdp),
+    aes(y = predicted),
+    color = "#555555",
+    linewidth = 0.65
+  ) +
+  # Countries colored according to bivariate class
+  geom_point(
+  aes(
+    color = fill,
+    size = indicators_count == 0
+  ),
+  alpha = 0.8
+) +
+  scale_size_manual(
+    values = c(`TRUE` = 1.5, `FALSE` = 2.2),
+    guide = "none"
+  ) +
+  scale_color_identity() +
+  scale_x_log10(
+    labels = scales::label_dollar(
+      scale_cut = scales::cut_short_scale()
+    )
+  ) +
+
+  # log1p allows countries with 0 indicators to remain visible
+  scale_y_continuous(
+    transform = "log1p",
+    breaks = c(0, 1, 5, 10, 25, 50, 100, 150),
+    expand = expansion(mult = c(0.03, 0.05))
+  ) +
+  labs(
+    x = "GDP (current US$, log scale)",
+    y = "Indicators reported (log scale)"
+  ) +
+  theme_scatter() +
+  theme(
+    # Left align axis titles a little more cleanly
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8),
+
+    # Very light grid so it doesn't compete with colors
+    panel.grid.major = element_line(
+      color = "#dbdbd9",
+      linewidth = 0.25
+    ),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(5, 8, 5, 5)
+  )
+print(gdp_scatter)
+
+ggsave("gdp_vs_indicators.png", plot = gdp_scatter, width = 8, height = 6, dpi = 300)
 
 bi_map_data <- world %>%
   left_join(
@@ -394,31 +535,74 @@ bi_map_data <- world %>%
 
 
 bi_map_plot <- ggplot(bi_map_data) +
-  geom_sf(aes(fill = fill), color = "white", linewidth = 0.1) +
-  scale_fill_identity() +
-  labs(
-    x = NULL, y = NULL,
-    title = "GDP and biodiversity indicator reporting",
-    subtitle = "Number of indicators reported vs. GDP, by country",
-    caption = "Dark grey = non-CBD entity or missing GDP data; 0 indicators reported is still colored"
+  geom_sf(
+    aes(fill = fill),
+    color = default_background_color,
+    linewidth = 0.12
   ) +
-  theme_map()
-
+  scale_fill_identity() +
+  coord_sf(
+    xlim = c(-180, 180),
+    ylim = c(-60, 85),
+    expand = FALSE
+  ) +
+  labs(
+    x = NULL,
+    y = NULL
+  ) +
+  theme_map() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(0, 0, 0, 0)
+  )
+print(bi_map_plot)
 # legend, in the style of the blog post
 bivariate_color_scale <- bivariate_color_scale %>%
   separate(group, into = c("ind", "gdp"), sep = " - ") %>%
   mutate(ind = as.integer(ind), gdp = as.integer(gdp))
 
-bi_legend <- ggplot() +
+
+bi_legend <- ggplot(
+  bivariate_color_scale,
+  aes(x = gdp, y = ind, fill = fill)
+) +
   geom_tile(
-    data = bivariate_color_scale,
-    mapping = aes(x = gdp, y = ind, fill = fill)
+    color = default_background_color,
+    linewidth = 0.4
   ) +
   scale_fill_identity() +
-  labs(x = "Higher GDP \u2192", y = "More indicators \u2192") +
-  theme_map() +
-  theme(axis.title = element_text(size = 10)) +
-  coord_fixed()
+  scale_x_continuous(
+    breaks = NULL,
+    expand = c(0, 0)
+  ) +
+  scale_y_continuous(
+    breaks = NULL,
+    expand = c(0, 0)
+  ) +
+  labs(
+    x = "Higher GDP →",
+    y = "More indicators →"
+  ) +
+  coord_fixed() +
+  theme_void() +
+  theme(
+    axis.title.x = element_text(
+      size = 8,
+      color = default_font_color,
+      margin = margin(t = 3)
+    ),
+    axis.title.y = element_text(
+      size = 8,
+      color = default_font_color,
+      angle = 90,
+      margin = margin(r = 3)
+    ),
+    plot.background = element_rect(
+      fill = default_background_color,
+      color = NA
+    )
+  )
 
 # EU inset colored by the EU's own bivariate class (GDP summed across member states)
 eu_gdp <- gdp_data %>%
@@ -440,20 +624,114 @@ eu_bi_map_data <- world %>%
   mutate(fill = eu_fill)
 
 eu_bi_inset <- ggplot(eu_bi_map_data) +
-  geom_sf(aes(fill = fill), color = "white", linewidth = 0.2) +
-  coord_sf(xlim = c(-11, 32), ylim = c(34, 71), expand = FALSE) +
+  geom_sf(
+    aes(fill = fill),
+    color = default_background_color,
+    linewidth = 0.2
+  ) +
+  coord_sf(
+    xlim = c(-11, 32),
+    ylim = c(34, 71),
+    expand = FALSE
+  ) +
   scale_fill_identity() +
   theme_void(base_size = 9) +
   theme(
-    plot.title = element_text(size = 9, face = "bold", hjust = 0.5),
-    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.4)
+    plot.title = element_text(
+      size = 8,
+      face = "bold",
+      hjust = 0.5,
+      color = default_font_color,
+      margin = margin(b = 2)
+    ),
+    panel.border = element_rect(
+      color = "#939184",
+      fill = NA,
+      linewidth = 0.3
+    ),
+    plot.background = element_rect(
+      fill = default_background_color,
+      color = NA
+    )
   ) +
   labs(title = "European Union")
 
 bi_map_final <- bi_map_plot +
-  inset_element(eu_bi_inset, left = 0.10, bottom = 0.02, right = 0.37, top = 0.44) +
-  inset_element(bi_legend, left = -.10, bottom = 0.35, right = 0.28, top = 0.72)
+  inset_element(
+    bi_legend,
+    left = 0.025,
+    bottom = 0.18,
+    right = 0.19,
+    top = 0.45
+  ) +
+  inset_element(
+    eu_bi_inset,
+    left = 0.40,
+    bottom = 0.05,
+    right = 0.52,
+    top = 0.32
+  ) +
+  plot_annotation(
+    caption = paste0(
+      "Colors show countries' joint tertile of GDP and indicator reporting. ",
+      "Grey indicates non-CBD entities or missing GDP data."
+    ),
+    theme = theme(
+      plot.caption = element_text(
+        size = 7,
+        hjust = 0.5,
+        color = "#939184",
+        margin = margin(t = 5)
+      ),
+      plot.background = element_rect(
+        fill = default_background_color,
+        color = NA
+      )
+    )
+  )
+
+
+print(bi_map_final)
 
 ggsave("gdp_indicators_bivariate_map.png", plot = bi_map_final, width = 12, height = 7, dpi = 300)
 
 
+  combined_plot <- bi_map_final + gdp_scatter +
+  plot_layout(
+    widths = c(1.6, 1)
+  ) +
+  plot_annotation(
+    title = "GDP and biodiversity indicator reporting",
+    subtitle = "Number of indicators reported vs. GDP, by country",
+    theme = theme(
+      plot.title = element_text(
+        size = 16,
+        face = "bold",
+        hjust = 0.5,
+        color = default_font_color
+      ),
+      plot.subtitle = element_text(
+        size = 10,
+        hjust = 0.5,
+        color = "#6F6F6F",
+        margin = margin(b = 6)
+      ),
+      plot.background = element_rect(
+        fill = default_background_color,
+        color = NA
+      )
+    )
+  )
+
+
+
+print(combined_plot)
+
+ggsave(
+  "gdp_indicators_combined.png",
+  combined_plot,
+  width = 14,
+  height = 5.5,
+  dpi = 300,
+  bg = default_background_color
+)
