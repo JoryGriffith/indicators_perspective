@@ -175,9 +175,13 @@ country_counts <- indicators_sum %>%
 world <- ne_countries(scale = "medium", returnclass = "sf") %>%
   filter(name != "Antarctica") %>%
   mutate(name = stri_trans_nfc(name), cbd_party = if_else(name %in% non_cbd_entities, "No", "Yes"))
+
 print(world)
 
-map_data <- world %>%
+reprojected_World <- world
+#reprojected_World <- st_transform(world, 'ESRI:54030')
+
+map_data <- reprojected_World %>%
   left_join(country_counts %>% select(Government, indicators_count), by = c("name" = "Government")) %>%
   mutate(
     indicators_count = if_else(
@@ -220,6 +224,8 @@ map_plot <- ggplot(map_data) +
     caption = "Non-CBD entities shown in dark grey"
   )
 
+print(map_plot)
+
 library(patchwork)
 
 # EU reports as a single CBD Party, so its count applies to all member states
@@ -235,7 +241,7 @@ eu_indicator_count <- country_counts %>%
   filter(Government == "European Union") %>%
   pull(indicators_count)
 
-eu_map_data <- world %>%
+eu_map_data <- reprojected_World %>%
   filter(name %in% eu_members) %>%
   mutate(indicators_count = eu_indicator_count)
 
@@ -254,7 +260,7 @@ eu_inset <- ggplot(eu_map_data) +
     panel.border = element_rect(color = "black", fill = NA, linewidth = 0.4)
   ) +
   labs(title = paste0("European Union (n = ", eu_indicator_count, ")"))
-
+print(eu_inset)
 map_plot_with_inset <- map_plot +
   inset_element(eu_inset, left = 0, bottom = 0, right = 0.32, top = 0.5)
 
@@ -284,7 +290,7 @@ write.csv(gdp_vs_indicators, "gdp_vs_indicators.csv", row.names = FALSE)
 
 # All CBD-party countries get indicators_count = 0 (not dropped) if they never
 # reported anything; only entities in non_cbd_entities stay grey on the map
-cbd_country_names <- world %>%
+cbd_country_names <- reprojected_World %>%
   st_drop_geometry() %>%
   filter(cbd_party == "Yes") %>%
   distinct(name) %>%
@@ -410,10 +416,10 @@ theme_scatter <- function(...) {
 
       # Axes
       axis.line = element_blank(),
-      axis.text.x = element_text(size = 9, color = default_font_color),
-      axis.text.y = element_text(size = 9, color = default_font_color),
-      axis.title.x = element_text(size = 11, color = default_font_color),
-      axis.title.y = element_text(size = 11, color = default_font_color),
+      axis.text.x = element_text(size = 14, color = default_font_color),
+      axis.text.y = element_text(size = 14, color = default_font_color),
+      axis.title.x = element_text(size = 28, color = default_font_color),
+      axis.title.y = element_text(size = 28, color = default_font_color),
       axis.ticks = element_blank(),
 
       # Grid
@@ -508,10 +514,6 @@ gdp_scatter <- ggplot(
   ) +
   theme_scatter() +
   theme(
-    # Left align axis titles a little more cleanly
-    axis.title = element_text(size = 10),
-    axis.text = element_text(size = 8),
-
     # Very light grid so it doesn't compete with colors
     panel.grid.major = element_line(
       color = "#dbdbd9",
@@ -522,7 +524,7 @@ gdp_scatter <- ggplot(
   )
 print(gdp_scatter)
 
-ggsave("gdp_vs_indicators.png", plot = gdp_scatter, width = 8, height = 6, dpi = 300)
+ggsave("gdp_vs_indicators.png", plot = gdp_scatter, width = 6, height = 6, dpi = 300)
 
 bi_map_data <- world %>%
   left_join(
@@ -542,6 +544,8 @@ bi_map_plot <- ggplot(bi_map_data) +
   ) +
   scale_fill_identity() +
   coord_sf(
+    crs = st_crs("ESRI:54030"),
+    default_crs = st_crs(4326),
     xlim = c(-180, 180),
     ylim = c(-60, 85),
     expand = FALSE
@@ -588,12 +592,12 @@ bi_legend <- ggplot(
   theme_void() +
   theme(
     axis.title.x = element_text(
-      size = 8,
+      size = 11,
       color = default_font_color,
       margin = margin(t = 3)
     ),
     axis.title.y = element_text(
-      size = 8,
+      size = 11,
       color = default_font_color,
       angle = 90,
       margin = margin(r = 3)
@@ -659,17 +663,17 @@ eu_bi_inset <- ggplot(eu_bi_map_data) +
 bi_map_final <- bi_map_plot +
   inset_element(
     bi_legend,
-    left = 0.025,
-    bottom = 0.18,
-    right = 0.19,
-    top = 0.45
+    left = 0.12,
+    bottom = 0.07,
+    right = 0.285,
+    top = 0.35
   ) +
   inset_element(
     eu_bi_inset,
-    left = 0.40,
-    bottom = 0.05,
-    right = 0.52,
-    top = 0.32
+    left = 0.355,
+    bottom = 0.595,
+    right = 0.465,
+    top = 0.835
   ) +
   plot_annotation(
     caption = paste0(
@@ -678,7 +682,7 @@ bi_map_final <- bi_map_plot +
     ),
     theme = theme(
       plot.caption = element_text(
-        size = 7,
+        size = 9,
         hjust = 0.5,
         color = "#939184",
         margin = margin(t = 5)
@@ -693,45 +697,54 @@ bi_map_final <- bi_map_plot +
 
 print(bi_map_final)
 
+# alternative EU inset placement
+#inset_element(
+ #   eu_bi_inset,
+  #  left = 0.65,
+   # bottom = 0.05,
+   # right = 0.77,
+   # top = 0.32
+  #)
+
 ggsave("gdp_indicators_bivariate_map.png", plot = bi_map_final, width = 12, height = 7, dpi = 300)
 
 
-  combined_plot <- bi_map_final + gdp_scatter +
-  plot_layout(
-    widths = c(1.6, 1)
-  ) +
-  plot_annotation(
-    title = "GDP and biodiversity indicator reporting",
-    subtitle = "Number of indicators reported vs. GDP, by country",
-    theme = theme(
-      plot.title = element_text(
-        size = 16,
-        face = "bold",
-        hjust = 0.5,
-        color = default_font_color
-      ),
-      plot.subtitle = element_text(
-        size = 10,
-        hjust = 0.5,
-        color = "#6F6F6F",
-        margin = margin(b = 6)
-      ),
-      plot.background = element_rect(
-        fill = default_background_color,
-        color = NA
-      )
-    )
-  )
+  # combined_plot <- bi_map_final + gdp_scatter +
+  # plot_layout(
+  #   widths = c(1.6, 1)
+  # ) +
+  # plot_annotation(
+  #   title = "GDP and biodiversity indicator reporting",
+  #   subtitle = "Number of indicators reported vs. GDP, by country",
+  #   theme = theme(
+  #     plot.title = element_text(
+  #       size = 16,
+  #       face = "bold",
+  #       hjust = 0.5,
+  #       color = default_font_color
+  #     ),
+  #     plot.subtitle = element_text(
+  #       size = 10,
+  #       hjust = 0.5,
+  #       color = "#6F6F6F",
+  #       margin = margin(b = 6)
+  #     ),
+  #     plot.background = element_rect(
+  #       fill = default_background_color,
+  #       color = NA
+  #     )
+  #   )
+  # )
 
 
 
-print(combined_plot)
+# print(combined_plot)
 
-ggsave(
-  "gdp_indicators_combined.png",
-  combined_plot,
-  width = 14,
-  height = 5.5,
-  dpi = 300,
-  bg = default_background_color
-)
+# ggsave(
+#   "gdp_indicators_combined.png",
+#   combined_plot,
+#   width = 14,
+#   height = 5.5,
+#   dpi = 300,
+#   bg = default_background_color
+# )
