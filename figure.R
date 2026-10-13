@@ -10,34 +10,82 @@ dat <- read.csv("scbd-ort-nr7-data-indicator-data-10-Sep-2026-15-39.csv") %>%
 dat %>%
   group_by(Government) %>%
   count()
-# 130 countries represented in the data
-
-# Filter out national indicators
-headline_indicators <- dat %>%
-  filter(Indicator.Type != "national")
+# 141 countries represented in the data
 
 library(lubridate)
 
-# Remove all indicators published after the deadline (which were not included in global report)
+# Remove all indicators published after the deadline (which were not included in global report),
+# filter out national indicators, and drop rows with no reported Value,
+# so every downstream calculation uses headline indicators only
 dat <- dat %>%
   mutate(
     published_date = dmy_hm(Published.on),
     published_date = as.Date(published_date)
   ) %>%
-  filter(published_date <= as.Date("2026-03-07"))
+  filter(
+    published_date <= as.Date("2026-03-07"),
+    Indicator.Type != "national",
+    !is.na(Value)
+  )
 nrow(dat)
-# 113 countries in the filtered publication dates data
+
+dat %>%
+  group_by(Government) %>%
+  count()
+# now 109 countries who reported on indicators by the deadline
 
 length(unique(dat$Government))
 
-# summarise headline indicators by government and indicator code to get max and min values
+# Official UN classifications used throughout this script: Least Developed
+# Countries (LDC) and Small Island Developing States (SIDS). Several countries
+# are officially both (e.g. Haiti, Kiribati, Comoros), so their representation
+# rates are calculated independently below and are not mutually exclusive.
+ldc_countries <- c(
+  "Afghanistan", "Angola", "Bangladesh", "Benin", "Burkina Faso", "Burundi",
+  "Cambodia", "Central African Republic", "Chad", "Comoros",
+  "Democratic Republic of the Congo", "Djibouti", "Eritrea", "Ethiopia",
+  "Gambia", "Guinea", "Guinea-Bissau", "Haiti", "Kiribati",
+  "Lao People's Democratic Republic", "Lesotho", "Liberia", "Madagascar",
+  "Malawi", "Mali", "Mauritania", "Mozambique", "Myanmar", "Nepal", "Niger",
+  "Rwanda", "Senegal", "Sierra Leone", "Solomon Islands", "Somalia",
+  "South Sudan", "Sudan", "Timor-Leste", "Togo", "Tuvalu", "Uganda",
+  "United Republic of Tanzania", "Yemen", "Zambia"
+)
+
+sids_countries <- c(
+  "Antigua and Barbuda", "Bahamas", "Barbados", "Belize", "Cabo Verde",
+  "Comoros", "Cook Islands", "Cuba", "Dominica", "Dominican Republic", "Fiji",
+  "Grenada", "Guinea-Bissau", "Guyana", "Haiti", "Jamaica", "Kiribati",
+  "Maldives", "Marshall Islands", "Micronesia (Federated States of)",
+  "Mauritius", "Nauru", "Niue", "Palau", "Papua New Guinea", "Samoa",
+  "São Tomé and Príncipe", "Singapore", "St. Kitts and Nevis", "St. Lucia",
+  "St. Vincent and the Grenadines", "Seychelles", "Solomon Islands",
+  "Suriname", "Timor-Leste", "Tonga", "Trinidad and Tobago", "Tuvalu",
+  "Vanuatu"
+)
+
+# Count how many LDCs are represented in the data
+ldc_count <- dat %>%
+  filter(Government %in% ldc_countries) %>%
+  distinct(Government) %>%
+  nrow()
+
+print(paste("Number of LDCs represented in the data:", ldc_count))
+print(paste("Percentage of LDCs represented in the data:", round(ldc_count / length(ldc_countries) * 100, 2), "%"))
+
+# Count how many SIDS are represented in the data
+sids_count <- dat %>%
+  filter(Government %in% sids_countries) %>%
+  distinct(Government) %>%
+  nrow()
+
+print(paste("Number of SIDS represented in the data:", sids_count))
+print(paste("Percentage of SIDS represented in the data:", round(sids_count / length(sids_countries) * 100, 2), "%")) # only 17.5% of SIDS represented in the data
+
+# count distinct headline indicator codes per government (multiple years of reporting count once)
 indicators_sum <- dat %>%
-  drop_na(Value) %>%
-  group_by(Government, Indicator.Code) %>%
-  summarise(max = max(Value, na.rm = TRUE), min = min(Value, na.rm = TRUE), .groups = "drop") %>%
   group_by(Government) %>%
-  count(name = "indicators_count") %>%
-  ungroup()
+  summarise(indicators_count = n_distinct(Indicator.Code), .groups = "drop")
 
 print(indicators_sum)
 write.csv(indicators_sum, "indicators_summary.csv", row.names = FALSE)
@@ -178,10 +226,7 @@ world <- ne_countries(scale = "medium", returnclass = "sf") %>%
 
 print(world)
 
-reprojected_World <- world
-#reprojected_World <- st_transform(world, 'ESRI:54030')
-
-map_data <- reprojected_World %>%
+map_data <- world %>%
   left_join(country_counts %>% select(Government, indicators_count), by = c("name" = "Government")) %>%
   mutate(
     indicators_count = if_else(
@@ -241,7 +286,7 @@ eu_indicator_count <- country_counts %>%
   filter(Government == "European Union") %>%
   pull(indicators_count)
 
-eu_map_data <- reprojected_World %>%
+eu_map_data <- world %>%
   filter(name %in% eu_members) %>%
   mutate(indicators_count = eu_indicator_count)
 
@@ -290,7 +335,7 @@ write.csv(gdp_vs_indicators, "gdp_vs_indicators.csv", row.names = FALSE)
 
 # All CBD-party countries get indicators_count = 0 (not dropped) if they never
 # reported anything; only entities in non_cbd_entities stay grey on the map
-cbd_country_names <- reprojected_World %>%
+cbd_country_names <- world %>%
   st_drop_geometry() %>%
   filter(cbd_party == "Yes") %>%
   distinct(name) %>%
@@ -310,6 +355,122 @@ cat("Reported by 2026-03-07 deadline:", length(unique(dat$Government)), "\n")
 cat("Have >=1 headline/non-national indicator value:", nrow(country_counts), "\n")
 cat("Matched to WDI GDP data:", nrow(gdp_vs_indicators), "\n")
 cat("(European Union excluded from country-level GDP join; shown separately via the inset)\n")
+
+# Assign each CBD Party an official UN development status (Developed, Developing,
+# Least Developed Country, or Small Island Developing State) and compare the
+# number of indicators reported across these categories.
+# Priority when a country is both an LDC and a SIDS: SIDS takes precedence.
+
+# São Tomé and Príncipe never appears in the raw reporting data, but it is a CBD
+# Party and a SIDS, so map its accented spelling to the world map's name too
+country_name_map["São Tomé and Príncipe"] <- "São Tomé and Principe"
+
+# Explicit "Developed" country list (all other CBD Parties are "Developing")
+developed_countries <- c(
+  "Australia", "Austria", "Canada", "Denmark", "Finland", "France", "Germany",
+  "Greece", "Iceland", "Ireland", "Italy", "Japan", "Luxembourg", "Monaco",
+  "Netherlands", "New Zealand", "Norway", "Portugal", "Spain", "Sweden", "Switzerland"
+)
+
+# ldc_countries/sids_countries use the CBD data's naming (e.g. "Lao People's
+# Democratic Republic"), which differs from the world map's naming (e.g.
+# "Laos"), so recode them before matching against gdp_full/world's "name" field
+ldc_mapped <- recode(ldc_countries, !!!country_name_map)
+sids_mapped <- recode(sids_countries, !!!country_name_map)
+
+# % of LDCs / SIDS reporting zero indicators, using the 0-filled CBD-party
+# population (gdp_full). Calculated independently (not mutually exclusive),
+# since several countries are officially both an LDC and a SIDS
+ldc_percent <- gdp_full %>%
+  filter(Government %in% ldc_mapped) %>%
+  summarise(percent_0 = round((sum(indicators_count == 0) / n()) * 100, 1))
+
+sids_percent <- gdp_full %>%
+  filter(Government %in% sids_mapped) %>%
+  summarise(percent_0 = round((sum(indicators_count == 0) / n()) * 100, 1))
+
+developing_percent <- gdp_full %>%
+  filter(!Government %in% developed_countries) %>%
+  summarise(percent_0 = round((sum(indicators_count == 0) / n()) * 100, 1))
+
+cat("\nPercent of LDCs reporting 0 indicators:", ldc_percent$percent_0, "%\n")
+cat("Percent of SIDS reporting 0 indicators:", sids_percent$percent_0, "%\n")
+cat("Percent of Developing countries reporting 0 indicators:", developing_percent$percent_0, "%\n")
+
+development_status <- world %>%
+  st_drop_geometry() %>%
+  filter(cbd_party == "Yes") %>%
+  distinct(name) %>%
+  mutate(
+    status = case_when(
+      name %in% sids_mapped ~ "SIDS",
+      name %in% ldc_mapped ~ "LDC",
+      name %in% developed_countries ~ "Developed",
+      TRUE ~ "Developing"
+    )
+  ) %>%
+  select(name, status)
+
+# EU member states report jointly as a single CBD Party, so drop their individual
+# rows (which would otherwise look like 27 separate non-reporters) and add one
+# row for the European Union itself, using its actual reported indicator count
+development_full <- gdp_full %>%
+  select(Government, indicators_count) %>%
+  left_join(development_status, by = c("Government" = "name")) %>%
+  filter(!Government %in% eu_members) %>%
+  bind_rows(tibble(Government = "European Union", indicators_count = eu_indicator_count, status = "Developed")) %>%
+  mutate(status = factor(status, levels = c("Developed", "Developing", "LDC", "SIDS")))
+
+# count percentage of each development status that reported on 0 indicators
+development_full %>%
+  group_by(status) %>%
+  summarise(
+    total = n(),
+    reported_0 = sum(indicators_count == 0), 
+    percent_0 = round((reported_0 / total) * 100, 1)
+  )
+
+write.csv(development_full, "development_status_indicators.csv", row.names = FALSE)
+# Look at number of indicators reported for develped countries
+development_full %>%
+  filter(status == "Developed") %>%
+  print(n=47)
+
+cat("\n--- Development status counts among CBD Parties ---\n")
+print(table(development_full$status, useNA = "ifany"))
+
+# Plot on a log1p scale (to keep the zero-inflated distribution readable) but
+# label the axis with the back-transformed, actual indicator counts
+dev_breaks <- c(0, 1, 2, 5, 10, 20, 30)
+dev_breaks <- dev_breaks[dev_breaks <= max(development_full$indicators_count, na.rm = TRUE)]
+
+development_boxplot <- ggplot(development_full, aes(x = status, y = indicators_count, fill = status)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.15, size = 1.2, alpha = 0.5, color = "#4e4d47") +
+  scale_y_continuous(trans = "log1p", breaks = dev_breaks) +
+  scale_fill_manual(values = c(
+    "Developed" = "#4477AA",
+    "Developing" = "#CCBB44",
+    "LDC" = "#EE6677",
+    "SIDS" = "#66CCEE"
+  )) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 15, face = "bold", hjust = 0.5)
+  ) +
+  labs(
+    title = "Indicators reported by development status",
+    x = NULL,
+    y = "Indicators reported"
+  )
+
+print(development_boxplot)
+ggsave("indicators_by_development_status.png", plot = development_boxplot, width = 7, height = 6, dpi = 300)
+
+# This doesn't really show what I want because many of the countries that are developed are eastern european countries that aren't that wealthy
+
+
 
 # Bivariate map styled after timogrossenbacher.ch/bivariate-maps-with-ggplot2-and-sf/
 # 3x3 classes built from tertiles of GDP and indicators reported
@@ -418,8 +579,8 @@ theme_scatter <- function(...) {
       axis.line = element_blank(),
       axis.text.x = element_text(size = 14, color = default_font_color),
       axis.text.y = element_text(size = 14, color = default_font_color),
-      axis.title.x = element_text(size = 28, color = default_font_color),
-      axis.title.y = element_text(size = 28, color = default_font_color),
+      axis.title.x = element_text(size = 20, color = default_font_color),
+      axis.title.y = element_text(size = 20, color = default_font_color),
       axis.ticks = element_blank(),
 
       # Grid
@@ -524,7 +685,7 @@ gdp_scatter <- ggplot(
   )
 print(gdp_scatter)
 
-ggsave("gdp_vs_indicators.png", plot = gdp_scatter, width = 6, height = 6, dpi = 300)
+ggsave("gdp_vs_indicators.pdf", plot = gdp_scatter, width = 6, height = 6, dpi = 300)
 
 bi_map_data <- world %>%
   left_join(
@@ -697,54 +858,7 @@ bi_map_final <- bi_map_plot +
 
 print(bi_map_final)
 
-# alternative EU inset placement
-#inset_element(
- #   eu_bi_inset,
-  #  left = 0.65,
-   # bottom = 0.05,
-   # right = 0.77,
-   # top = 0.32
-  #)
-
-ggsave("gdp_indicators_bivariate_map.png", plot = bi_map_final, width = 12, height = 7, dpi = 300)
 
 
-  # combined_plot <- bi_map_final + gdp_scatter +
-  # plot_layout(
-  #   widths = c(1.6, 1)
-  # ) +
-  # plot_annotation(
-  #   title = "GDP and biodiversity indicator reporting",
-  #   subtitle = "Number of indicators reported vs. GDP, by country",
-  #   theme = theme(
-  #     plot.title = element_text(
-  #       size = 16,
-  #       face = "bold",
-  #       hjust = 0.5,
-  #       color = default_font_color
-  #     ),
-  #     plot.subtitle = element_text(
-  #       size = 10,
-  #       hjust = 0.5,
-  #       color = "#6F6F6F",
-  #       margin = margin(b = 6)
-  #     ),
-  #     plot.background = element_rect(
-  #       fill = default_background_color,
-  #       color = NA
-  #     )
-  #   )
-  # )
+ggsave("gdp_indicators_bivariate_map.pdf", plot = bi_map_final, width = 12, height = 7, dpi = 300)
 
-
-
-# print(combined_plot)
-
-# ggsave(
-#   "gdp_indicators_combined.png",
-#   combined_plot,
-#   width = 14,
-#   height = 5.5,
-#   dpi = 300,
-#   bg = default_background_color
-# )
